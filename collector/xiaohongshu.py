@@ -27,8 +27,15 @@ async def collect(cookies_dir) -> dict:
             ctx = await browser.new_context(storage_state=str(cookies_dir / "account.json"))
             await clean_ctx(ctx)
             page = await ctx.new_page()
-            # 1) 笔记管理列表
-            await page.goto(MANAGE, wait_until="domcontentloaded", timeout=30000)
+            # 1) 笔记管理列表（小红书偶发慢，60s 超时+重试一次）
+            for attempt in (1, 2):
+                try:
+                    await page.goto(MANAGE, wait_until="domcontentloaded", timeout=60000)
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        raise e
+                    log(f"[xiaohongshu] 打开笔记管理超时，重试…")
             body = ""
             for i in range(15):
                 await page.wait_for_timeout(2000)
@@ -38,7 +45,14 @@ async def collect(cookies_dir) -> dict:
             lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
             out["works"] = _parse(lines)
             # 2) 首页概览（粉丝/关注/近7日）
-            await page.goto(HOME, wait_until="domcontentloaded", timeout=30000)
+            for attempt in (1, 2):
+                try:
+                    await page.goto(HOME, wait_until="domcontentloaded", timeout=60000)
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        raise e
+                    log(f"[xiaohongshu] 打开首页超时，重试…")
             await page.wait_for_timeout(6000)
             hbody = await page.evaluate("() => document.body.innerText")
             out["fans"], out["extra"] = _parse_home(hbody)

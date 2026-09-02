@@ -7,6 +7,10 @@ from playwright.async_api import async_playwright
 from .base import load_cookie, clean_ctx, log, to_int
 
 URL = "https://cp.kuaishou.com/article/manage/video"
+HOME = "https://cp.kuaishou.com/profile"
+# 用户长 ID（从 App 分享链接跳转 URL 的 userId 参数得出：3xp6xq5bwy736vw）
+# www.kuaishou.com 个人主页（需 ks_web 登录态才能看粉丝数）
+WEB_PROFILE = "https://www.kuaishou.com/profile/3xp6xq5bwy736vw"
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
 DUR_RE = re.compile(r"^\d{1,2}:\d{2}$")
 SKIP = {"已发布", "已上线", "待发布", "播放", "点赞", "评论", "全部作品", "时间范围",
@@ -46,8 +50,50 @@ async def collect(cookies_dir) -> dict:
             lines = [ln.strip() for ln in body.split("\n")]
             lines = [ln for ln in lines if ln]
             out["works"] = _parse(lines)
+            # 首页数据概览：昨日播放/点赞/净增粉丝/评论/分享（快手 CP 后台不展示总粉丝数）
+            hbody = ""
+            try:
+                await page.goto(HOME, wait_until="domcontentloaded", timeout=30000)
+                for i in range(10):
+                    await page.wait_for_timeout(2000)
+                    hbody = await page.evaluate("() => document.body.innerText")
+                    if "净增粉丝量" in hbody:
+                        break
+                out["extra"] = _parse_overview(hbody)
+            except Exception as e:
+                log(f"[kuaishou] 数据概览抓取失败: {e}")
+            # 总粉丝数：www.kuaishou.com 登录态主页（需 ks_web 登录态）
+            web_state = cookies_dir.parent / "ks_web" / "account.json"
+            if web_state.exists():
+                try:
+                    await page.context.close()
+                except Exception:
+                    pass
+                ctx2 = await browser.new_context(storage_state=str(web_state),
+                                                 viewport={"width": 1280, "height": 900}, locale="zh-CN")
+                await clean_ctx(ctx2)
+                page2 = await ctx2.new_page()
+                await page2.goto(WEB_PROFILE, wait_until="domcontentloaded", timeout=45000)
+                for i in range(8):
+                    await page2.wait_for_timeout(2000)
+                    wb = await page2.evaluate("() => document.body ? document.body.innerText : ''")
+                    if "粉丝" in wb:
+                        break
+                out["fans"] = _parse_web_profile(wb)
+                await ctx2.close()
+            if out["fans"] is None:
+                # 兜底：手动口径（来自快手 App「我」页，用户可改 fans_manual.txt）
+                manual = cookies_dir.parent / "ks_web" / "fans_manual.txt"
+                if manual.exists():
+                    try:
+                        v = to_int(manual.read_text(encoding="utf-8").strip())
+                        if v is not None:
+                            out["fans"] = v
+                            log("[kuaishou] 使用手动粉丝数(快手App口径)")
+                    except Exception:
+                        pass
             out["ok"] = True
-            log(f"[kuaishou] ✓ 作品 {len(out['works'])} 条")
+            log(f"[kuaishou] ✓ 作品 {len(out['works'])} 条, 粉丝 {out['fans']}")
             await browser.close()
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {e}"
@@ -98,6 +144,46 @@ def _parse(lines):
             seen.add(key)
             dedup.append(w)
     return dedup if works else []
+
+
+def _parse_overview(body):
+    """首页数据概览卡片：
+    播放量 昨日 +837 846 / 点赞量 昨日 +5 5 / 净增粉丝量 昨日 +2 2
+    完播率 0% / 评论量 昨日 +1 2 / 分享量 昨日 +0 0"""
+    extra = {}
+    lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
+    keys = {"播放量": "new_views", "点赞量": "new_likes", "净增粉丝量": "net_fans",
+            "评论量": "new_comments", "分享量": "new_shares"}
+    for i, ln in enumerate(lines):
+        if ln in keys:
+            # 结构：标签 → 昨日 → 增量(+N) → 总量
+            total = to_int(lines[i + 3]) if i + 3 < len(lines) else None
+            if total is not None:
+                extra.setdefault("overview", {})[keys[ln]] = total
+    return extra
+
+
+def _parse_web_profile(body):
+    """www.kuaishou.com 个人主页（登录态）：行如『关注 2 粉丝 5 获赞 8』或『5 粉丝』"""
+    if not body or "粉丝" not in body:
+        return None
+    # 优先「粉丝 N」（页面实际格式：关注 2 粉丝 5 获赞 8）
+    m = re.search(r"粉丝\s*：?\s*(\d[\d,]*)", body)
+    if not m:
+        # 兜底「N 粉丝」
+        m = re.search(r"(\d[\d,]*)\s*粉丝", body)
+    if m:
+        v = to_int(m.group(1))
+        if v is not None:
+            return v
+    # 兜底：粉丝独占一行，取上一行数字
+    lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
+    for i, ln in enumerate(lines):
+        if ln == "粉丝" and i > 0:
+            v = to_int(lines[i - 1])
+            if v is not None:
+                return v
+    return None
 
 
 if __name__ == "__main__":

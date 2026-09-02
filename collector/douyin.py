@@ -7,6 +7,7 @@ from playwright.async_api import async_playwright
 from .base import load_cookie, clean_ctx, log, to_int
 
 URL = "https://creator.douyin.com/creator-micro/content/manage"
+DATA_URL = "https://creator.douyin.com/creator-micro/data-center/operation"
 DATE_RE = re.compile(r"^\d{4}年\d{2}月\d{2}日 \d{2}:\d{2}$")
 DUR_RE = re.compile(r"^\d{1,2}:\d{2}$")
 LABELS = {"播放", "点赞", "评论", "分享", "收藏", "完播率", "2秒跳出率", "吸粉量", "粉丝增量"}
@@ -45,8 +46,19 @@ async def collect(cookies_dir) -> dict:
                 prev = body
             lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
             out["works"] = _parse(lines)
+            # 数据中心：总粉丝量/粉丝净增/吸粉量/脱粉量 + 数据总览
+            try:
+                await page.goto(DATA_URL, wait_until="domcontentloaded", timeout=30000)
+                for i in range(12):
+                    await page.wait_for_timeout(2000)
+                    dbody = await page.evaluate("() => document.body.innerText")
+                    if "总粉丝量" in dbody:
+                        break
+                out["fans"], out["extra"] = _parse_data_center(dbody)
+            except Exception as e:
+                log(f"[douyin] 数据中心抓取失败: {e}")
             out["ok"] = True
-            log(f"[douyin] ✓ 作品 {len(out['works'])} 条")
+            log(f"[douyin] ✓ 作品 {len(out['works'])} 条, 粉丝 {out['fans']}")
             await browser.close()
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {e}"
@@ -112,6 +124,38 @@ def _parse(lines):
             seen.add(key)
             dedup.append(w)
     return dedup if works else []
+
+
+def _parse_data_center(body):
+    """数据中心 /data-center/operation：
+    总粉丝量 5 / 粉丝净增 -1 / 吸粉量 0 / 脱粉量 1 / 回访粉丝量 3
+    数据总览: 播放量 400 / 互动率/L / 完播率 2.1% / 作品数 4
+    作品数据: 总播放量 400 / 总点赞量 7 / 总分享量 0 / 总评论量 6"""
+    fans = None
+    extra = {}
+    lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
+    for i, ln in enumerate(lines):
+        if ln in ("总粉丝量", "粉丝净增", "吸粉量", "脱粉量", "回访粉丝量"):
+            v = to_int(lines[i + 1]) if i + 1 < len(lines) else None
+            if v is not None:
+                if ln == "总粉丝量":
+                    fans = v
+                else:
+                    extra.setdefault("fans_metrics", {})[ln] = v
+        if ln in ("总播放量", "总点赞量", "总评论量", "总分享量", "平均播放时长"):
+            v = lines[i + 1] if i + 1 < len(lines) else None
+            if v:
+                if ln == "总播放量":
+                    extra["total_views"] = to_int(v)
+                elif ln == "总点赞量":
+                    extra["total_likes"] = to_int(v)
+                elif ln == "总评论量":
+                    extra["total_comments"] = to_int(v)
+                elif ln == "总分享量":
+                    extra["total_shares"] = to_int(v)
+                else:
+                    extra["avg_play_seconds"] = v
+    return fans, extra
 
 
 if __name__ == "__main__":

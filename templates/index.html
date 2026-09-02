@@ -90,6 +90,8 @@ async function load() {
     const ex = fi.extra || {};
     if (ex.last7) meta += `近7日: 播放 ${fmt(ex.last7.views)} · 点赞 ${fmt(ex.last7.likes)} · 涨粉 ${fmt(ex.last7.net_fans)}<br>`;
     if (ex.yesterday) meta += `昨日: 播放 ${fmt(ex.yesterday.new_views)} · 净增关注 ${fmt(ex.yesterday.new_fans)}<br>`;
+    if (ex.overview) meta += `昨日: 播放 ${fmt(ex.overview.new_views)} · 涨粉 ${fmt(ex.overview.net_fans)} · 评论 ${fmt(ex.overview.new_comments)}<br>`;
+    if (ex.fans_metrics) meta += `涨粉 ${fmt(ex.fans_metrics["粉丝净增"])} · 吸粉 ${fmt(ex.fans_metrics["吸粉量"])} · 脱粉 ${fmt(ex.fans_metrics["脱粉量"])}<br>`;
     if (ex.total_views) meta += `累计: 播放 ${fmt(ex.total_views)} · 赞 ${fmt(ex.total_likes)} · 粉 ${fmt(fans)}<br>`;
     if (ex.follows) meta += `关注 ${fmt(ex.follows)} · 赞藏 ${fmt(ex.total_likes_collects)}<br>`;
     meta += `<span class="muted">采集于 ${(fi.fetch_at || "").slice(5, 16)}</span>`;
