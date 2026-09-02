@@ -1,0 +1,11 @@
+# 敏感文件 / 本地数据，不入库
+cookies/
+stats.db
+*.db
+__pycache__/
+*.pyc
+*.log
+.venv/
+venv/
+.vscode/
+.idea/

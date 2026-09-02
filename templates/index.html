@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>全平台数据统计</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Microsoft YaHei", system-ui, sans-serif; background: #f4f6f9; color: #1f2937; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 16px 60px; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: #6b7280; font-size: 13px; margin-bottom: 18px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .card { background: #fff; border-radius: 12px; padding: 14px 16px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  .card .k { font-size: 12px; color: #6b7280; margin-bottom: 6px; }
+  .card .v { font-size: 24px; font-weight: 700; }
+  .card .s { font-size: 12px; color: #10b981; margin-top: 4px; }
+  .toolbar { display: flex; gap: 10px; align-items: center; margin: 16px 0 10px; flex-wrap: wrap; }
+  button { background: #2563eb; color: #fff; border: 0; padding: 8px 18px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+  button:disabled { background: #9ca3af; cursor: not-allowed; }
+  .plats { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin-bottom: 22px; }
+  .plat { background: #fff; border-radius: 12px; padding: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  .plat .name { font-weight: 700; font-size: 15px; display: flex; justify-content: space-between; align-items: center; }
+  .plat .fans { font-size: 26px; font-weight: 800; color: #0f172a; margin: 8px 0 2px; }
+  .plat .meta { font-size: 12px; color: #6b7280; line-height: 1.7; }
+  .plat .delta.up { color: #10b981; font-weight: 700; }
+  .plat .delta.flat { color: #9ca3af; }
+  .plat .err { color: #ef4444; font-size: 12px; }
+  table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 12px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  th, td { padding: 8px 10px; text-align: left; font-size: 13px; border-bottom: 1px solid #f1f3f5; }
+  th { background: #f8fafc; color: #475569; font-weight: 600; white-space: nowrap; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .title-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sec-title { font-size: 16px; font-weight: 700; margin: 26px 0 10px; }
+  .logs { background: #0f172a; color: #cbd5e1; border-radius: 12px; padding: 12px; font-size: 12px; font-family: Consolas, monospace; height: 260px; overflow-y: auto; line-height: 1.8; }
+  .badge { display:inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; background: #eef2ff; color: #4338ca; }
+  .muted { color: #9ca3af; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>📊 全平台数据统计</h1>
+  <div class="sub">跨屏数据统计器 · 抖音 / 快手 / 腾讯视频号 / 小红书 / B站 · 每日自动采集，也可手动刷新</div>
+
+  <div class="cards">
+    <div class="card"><div class="k">总粉丝（有数据平台）</div><div class="v" id="c-fans">--</div><div class="s" id="c-fans-delta"></div></div>
+    <div class="card"><div class="k">总播放（最新快照）</div><div class="v" id="c-views">--</div></div>
+    <div class="card"><div class="k">总点赞</div><div class="v" id="c-likes">--</div></div>
+    <div class="card"><div class="k">作品总数（各平台）</div><div class="v" id="c-works">--</div><div class="s" id="c-time"></div></div>
+  </div>
+
+  <div class="toolbar">
+    <button id="btn-collect">🔄 立即采集</button>
+    <span class="muted" id="collect-hint">采集会依次打开 5 个平台后台（约 2 分钟），不打扰发布器</span>
+  </div>
+
+  <div class="plats" id="plats"></div>
+
+  <div class="sec-title">作品明细（各平台最新一次快照）</div>
+  <div id="tables"></div>
+
+  <div class="sec-title">采集日志</div>
+  <div class="logs" id="logs"></div>
+</div>
+
+<script>
+let lastLogIdx = 0;
+const PLAT_NAMES = {douyin:"抖音", kuaishou:"快手", tencent:"腾讯视频号", xiaohongshu:"小红书", bilibili:"B站"};
+const fmt = n => (n === null || n === undefined) ? "--" : (typeof n === "number" ? n.toLocaleString() : n);
+const clsOfDelta = d => (d === null) ? "flat" : (d > 0 ? "up" : "flat");
+
+async function load() {
+  const r = await fetch("/api/dashboard");
+  const d = await r.json();
+  let totalFans = 0, totalViews = 0, totalLikes = 0, totalWorks = 0, fanPlats = 0;
+  const platHtml = [];
+  const tableHtml = [];
+  for (const pf of d.platforms) {
+    const g = d.groups[pf];
+    const fi = g.fans_info;
+    const fans = fi.fans;
+    if (fans !== null && fans !== undefined) { totalFans += fans; fanPlats++; }
+    for (const w of g.works) {
+      if (w.views) totalViews += w.views;
+      if (w.likes) totalLikes += w.likes;
+      totalWorks++;
+    }
+    const delta = fi.fans_delta;
+    let meta = "";
+    const ex = fi.extra || {};
+    if (ex.last7) meta += `近7日: 播放 ${fmt(ex.last7.views)} · 点赞 ${fmt(ex.last7.likes)} · 涨粉 ${fmt(ex.last7.net_fans)}<br>`;
+    if (ex.yesterday) meta += `昨日: 播放 ${fmt(ex.yesterday.new_views)} · 净增关注 ${fmt(ex.yesterday.new_fans)}<br>`;
+    if (ex.total_views) meta += `累计: 播放 ${fmt(ex.total_views)} · 赞 ${fmt(ex.total_likes)} · 粉 ${fmt(fans)}<br>`;
+    if (ex.follows) meta += `关注 ${fmt(ex.follows)} · 赞藏 ${fmt(ex.total_likes_collects)}<br>`;
+    meta += `<span class="muted">采集于 ${(fi.fetch_at || "").slice(5, 16)}</span>`;
+    platHtml.push(`<div class="plat">
+      <div class="name">${PLAT_NAMES[pf] || pf} <span class="badge">${g.works.length} 作品</span></div>
+      <div class="fans">${fmt(fans)} <span style="font-size:13px;color:#6b7280;font-weight:400">粉丝</span></div>
+      <div class="meta">${delta !== null ? `<span class="delta ${clsOfDelta(delta)}">${delta > 0 ? "↑" : ""}${fmt(delta)}</span> 较上次 · ` : ""}${meta}</div>
+    </div>`);
+    const rows = g.works.map(w => `<tr>
+      <td class="title-cell" title="${(w.title||"").replace(/"/g,"&quot;")}">${w.title || ""}</td>
+      <td class="num muted">${w.pub_datetime || ""}</td>
+      <td class="num">${fmt(w.views)}</td><td class="num">${fmt(w.likes)}</td>
+      <td class="num">${fmt(w.comments)}</td><td class="num">${fmt(w.collects)}</td><td class="num">${fmt(w.shares)}</td>
+    </tr>`).join("");
+    tableHtml.push(`<div class="sec-title">${PLAT_NAMES[pf] || pf}</div>
+    <table><thead><tr><th>标题</th><th>发布时间</th><th>播放</th><th>点赞</th><th>评论</th><th>收藏</th><th>分享</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="7" class="muted">无数据</td></tr>'}</tbody></table>`);
+  }
+  document.getElementById("c-fans").textContent = fmt(totalFans);
+  document.getElementById("c-fans-delta").textContent = `（${fanPlats} 个平台有粉丝数据）`;
+  document.getElementById("c-views").textContent = fmt(totalViews);
+  document.getElementById("c-likes").textContent = fmt(totalLikes);
+  document.getElementById("c-works").textContent = totalWorks;
+  document.getElementById("c-time").textContent = `上次采集 ${d.last_collect || "从未"}`;
+  document.getElementById("plats").innerHTML = platHtml.join("");
+  document.getElementById("tables").innerHTML = tableHtml.join("");
+}
+
+async function collect() {
+  const btn = document.getElementById("btn-collect");
+  btn.disabled = true;
+  btn.textContent = "采集中…";
+  await fetch("/api/collect", { method: "POST", headers: {"Content-Type": "application/json"}, body: "{}" });
+  pollLogs(true);
+}
+function pollLogs(force) {
+  fetch(`/api/logs?idx=${lastLogIdx}`).then(r => r.json()).then(d => {
+    if (d.items.length) {
+      lastLogIdx = d.last;
+      const box = document.getElementById("logs");
+      box.innerHTML += d.items.map(it => `<div>[${it[1]}] ${it[2]}</div>`).join("");
+      box.scrollTop = box.scrollHeight;
+    }
+    if (force) {
+      const busy = (d.last - window._collectStart || 0);
+      setTimeout(() => {
+        if (document.getElementById("btn-collect").disabled) {
+          fetch("/api/logs?idx=" + lastLogIdx).then(r2 => r2.json()).then(d2 => {
+            if (d2.items.some(it => it[2].includes("采集完成"))) {
+              document.getElementById("btn-collect").disabled = false;
+              document.getElementById("btn-collect").textContent = "🔄 立即采集";
+              load();
+            } else setTimeout(() => pollLogs(force), 3000);
+          });
+        }
+      }, 3000);
+    }
+  });
+}
+
+document.getElementById("btn-collect").addEventListener("click", collect);
+load();
+setInterval(() => load(), 60000);
+pollLogs(false);
+setInterval(() => pollLogs(false), 4000);
+</script>
+</body>
+</html>
