@@ -2,7 +2,9 @@
 """全平台跨屏数据统计器 - Flask 看板服务（127.0.0.1:8766）"""
 import builtins
 import json
+import os
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -15,7 +17,7 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from flask import Flask, jsonify, request, send_from_directory
 
-from collector import run_all
+from collector import MODULES, run_all
 from store import (init_db, save_snapshot, latest_snapshot, latest_fans,
                    last_collect_time, fans_history, DB_PATH)
 
@@ -48,17 +50,31 @@ builtins.print = _capture_print
 
 
 def _worker(platforms=None):
+    """逐平台独立子进程采集（隔离 Chromium 实例，防止 2GiB 小内存服务器多实例退化）。
+    Popen 逐行实时转发日志，避免 capture 管道缓冲问题。"""
     try:
-        res = run_all(platforms)
-        save_ok = []
-        for pf, r in res.items():
-            if r.get("ok"):
-                save_snapshot(pf, r["works"], fans=r.get("fans"),
-                              follows=r.get("extra", {}).get("follows"), extra=r.get("extra"))
-                save_ok.append(pf)
-            else:
-                log_line(f"[{pf}] 采集失败: {r.get('error')}")
-        log_line(f"—— 采集完成: {'/'.join(save_ok) if save_ok else '无成功平台'} ——")
+        cwd = str(Path(__file__).resolve().parent)
+        plats = platforms or list(MODULES.keys())
+        for pf in plats:
+            cmd = [sys.executable, "-B", "-m", "collector.collect_cli", pf]
+            try:
+                proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True,
+                                        encoding="utf-8", errors="replace")
+                for line in proc.stdout:
+                    line = line.strip()
+                    if line:
+                        log_line(line)
+                try:
+                    proc.wait(timeout=1800)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    log_line(f"[{pf}] 采集超时(30min)，已终止")
+            except Exception as e:
+                log_line(f"[{pf}] 子进程错误: {type(e).__name__}: {e}")
+                continue
+            if proc.returncode not in (0, None):
+                log_line(f"[{pf}] 子进程异常 exit={proc.returncode}")
     except Exception as e:
         log_line(f"采集异常: {type(e).__name__}: {e}")
 
@@ -126,4 +142,4 @@ if __name__ == "__main__":
                 threading.Thread(target=_worker, daemon=True).start()
     threading.Thread(target=_daily_check, daemon=True).start()
     log_line("统计器已启动: http://127.0.0.1:8766")
-    app.run(host="127.0.0.1", port=8766, debug=False, use_reloader=False)
+    app.run(host=os.environ.get("HOST", "127.0.0.1"), port=8766, debug=False, use_reloader=False)

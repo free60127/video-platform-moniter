@@ -33,29 +33,38 @@ async def collect(cookies_dir) -> dict:
             ctx = await browser.new_context(storage_state=str(cookies_dir / "account.json"))
             await clean_ctx(ctx)
             page = await ctx.new_page()
-            await page.goto(URL, wait_until="domcontentloaded", timeout=30000)
+            for attempt in (1, 2):
+                try:
+                    await page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+                    break
+                except Exception as e:
+                    if attempt == 2:
+                        raise e
+                    log(f"[kuaishou] 打开作品管理超时({str(e)[:50]}), 重试…")
             body = ""
             prev = ""
             stable = 0
-            for i in range(15):
+            for i in range(25):
                 await page.wait_for_timeout(2000)
                 body = await page.evaluate("() => document.body.innerText")
+                if not body.strip():
+                    # 页面还在加载：空 body 不视为稳定
+                    stable = 0
+                    continue
                 if body == prev:
                     stable += 1
-                    if stable >= 2:
+                    if stable >= 3:
                         break
                 else:
                     stable = 0
                 prev = body
-                if "已发布" in body and len(body) > 800:
-                    continue
             lines = [ln.strip() for ln in body.split("\n")]
             lines = [ln for ln in lines if ln]
             out["works"] = _parse(lines)
             # 首页数据概览：昨日播放/点赞/净增粉丝/评论/分享（快手 CP 后台不展示总粉丝数）
             hbody = ""
             try:
-                await page.goto(HOME, wait_until="domcontentloaded", timeout=30000)
+                await page.goto(HOME, wait_until="domcontentloaded", timeout=60000)
                 for i in range(10):
                     await page.wait_for_timeout(2000)
                     hbody = await page.evaluate("() => document.body.innerText")

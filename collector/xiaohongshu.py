@@ -52,24 +52,25 @@ async def collect(cookies_dir) -> dict:
                     break
             lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
             out["works"] = _parse(lines)
-            # 2) 首页概览（粉丝/关注/近7日）
+            # 2) 首页概览（粉丝/关注/近7日）——goto 60s + 三卡轮询 2 轮
+            hbody = ""
             for attempt in (1, 2):
                 try:
                     await page.goto(HOME, wait_until="domcontentloaded", timeout=60000)
-                    break
                 except Exception as e:
-                    if attempt == 2:
-                        raise e
-                    log(f"[xiaohongshu] 打开首页超时，重试…")
-            hbody = ""
-            for i in range(10):
-                await page.wait_for_timeout(2000)
-                try:
-                    hbody = await _evaluate(page, "() => document.body.innerText")
-                except Exception:
-                    continue
-                if "粉丝" in hbody or "粉丝数" in hbody:
+                    log(f"[xiaohongshu] 打开首页超时({str(e)[:50]}), 第{attempt}次…")
+                for i in range(15):
+                    await page.wait_for_timeout(2000)
+                    try:
+                        hbody = await _evaluate(page, "() => document.body.innerText")
+                    except Exception:
+                        continue
+                    # 三卡出现且页面完整（len>800 排除中间态占位 0/0/0），防止提前 break
+                    if "粉丝数" in hbody and "获赞与收藏" in hbody and len(hbody) > 800:
+                        break
+                if "粉丝数" in hbody and "获赞与收藏" in hbody and len(hbody) > 800:
                     break
+                log(f"[xiaohongshu] 首页三卡未就绪，第{attempt}次重试…")
             out["fans"], out["extra"] = _parse_home(hbody)
             out["ok"] = True
             log(f"[xiaohongshu] ✓ 笔记 {len(out['works'])} 条, 粉丝 {out['fans']}")
@@ -158,9 +159,10 @@ def _parse_home(body):
                     if num is not None:
                         extra.setdefault("last7", {})[key] = num
     if fans is None:
-        # 兜底：粘连形式（如『粉丝 20』）
-        m = re.search(r"(?:粉丝数|粉丝)\s*：?\s*(\d[\d,]*)", body)
-        if m:
+        # 兜底：粘连形式（如『粉丝数 23』同行）。只用带冒号/空分隔的精确形式，
+        # 避免匹配推荐位「粉丝数：4.9万」→ to_int 截出 4 的假数据
+        m = re.search(r"粉丝数\s*[：:]\s*(\d[\d,]*万?)\s*$", body, re.M)
+        if m and "万" not in m.group(1):
             fans = to_int(m.group(1))
     return fans, extra
 

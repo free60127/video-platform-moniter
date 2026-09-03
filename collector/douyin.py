@@ -30,25 +30,53 @@ async def collect(cookies_dir) -> dict:
             ctx = await browser.new_context(storage_state=str(cookies_dir / "account.json"))
             await clean_ctx(ctx)
             page = await ctx.new_page()
-            await page.goto(URL, wait_until="domcontentloaded", timeout=30000)
+            # 抖音页面加载极慢/间歇性超时：90s × 3 次；全败后仍尝试抓 body（可能部分渲染）
+            ok = False
+            for attempt in (1, 2, 3):
+                try:
+                    await page.goto(URL, wait_until="domcontentloaded", timeout=90000)
+                    ok = True
+                    break
+                except Exception as e:
+                    log(f"[douyin] 打开作品管理超时({str(e)[:50]}), 第{attempt}次…")
             body = ""
-            prev = ""
-            stable = 0
-            for i in range(20):
-                await page.wait_for_timeout(2000)
-                body = await page.evaluate("() => document.body.innerText")
-                if body == prev:
-                    stable += 1
-                    if stable >= 2:
-                        break
-                else:
-                    stable = 0
-                prev = body
+            if ok:
+                prev = ""
+                stable = 0
+                for i in range(25):
+                    await page.wait_for_timeout(2000)
+                    body = await page.evaluate("() => document.body.innerText")
+                    if not body.strip():
+                        # 页面还在加载：空 body 不视为稳定，防止提前退出
+                        stable = 0
+                        continue
+                    if body == prev:
+                        stable += 1
+                        if stable >= 3:
+                            break
+                    else:
+                        stable = 0
+                    prev = body
+            else:
+                # goto 全部超时：页面可能仍在加载，尝试直接读取
+                try:
+                    body = await page.evaluate("() => document.body.innerText")
+                except Exception:
+                    body = ""
+                if len(body) < 200:
+                    raise TimeoutError(f"抖音作品管理页在 3 次 {90000}ms 内未加载 (body={len(body)})")
             lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
             out["works"] = _parse(lines)
             # 数据中心：总粉丝量/粉丝净增/吸粉量/脱粉量 + 数据总览
             try:
-                await page.goto(DATA_URL, wait_until="domcontentloaded", timeout=30000)
+                for attempt in (1, 2):
+                    try:
+                        await page.goto(DATA_URL, wait_until="domcontentloaded", timeout=60000)
+                        break
+                    except Exception as e:
+                        if attempt == 2:
+                            raise e
+                        log(f"[douyin] 打开数据中心超时({str(e)[:60]}), 重试…")
                 for i in range(12):
                     await page.wait_for_timeout(2000)
                     dbody = await page.evaluate("() => document.body.innerText")
