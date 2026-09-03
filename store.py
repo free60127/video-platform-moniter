@@ -117,3 +117,36 @@ def fans_history(platform, limit=60):
             "SELECT fetch_at, fans, follows FROM fans WHERE platform=? ORDER BY fetch_at DESC LIMIT ?",
             (platform, limit)).fetchall()
     return [{"fetch_at": r["fetch_at"], "fans": r["fans"], "follows": r["follows"]} for r in rows]
+
+
+def work_history(keyword=None, limit=400):
+    """某视频（标题模糊匹配）在各平台的历史数据序列（按 fetch_at 升序）。
+    返回 {platform: [{fetch_at,title,views,likes,comments,collects,shares}...]} —— 用于单条视频趋势。"""
+    with _conn() as conn:
+        if keyword:
+            rows = conn.execute(
+                "SELECT fetch_at,platform,title,pub_datetime,views,likes,comments,collects,shares "
+                "FROM works WHERE title LIKE ? ORDER BY fetch_at ASC",
+                (f"%{keyword}%",)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT fetch_at,platform,title,pub_datetime,views,likes,comments,collects,shares "
+                "FROM works ORDER BY fetch_at DESC LIMIT ?", (limit,)).fetchall()
+    out = {}
+    for r in rows:
+        out.setdefault(r["platform"], []).append({
+            "fetch_at": r["fetch_at"], "title": r["title"], "pub_datetime": r["pub_datetime"],
+            "views": r["views"], "likes": r["likes"], "comments": r["comments"],
+            "collects": r["collects"], "shares": r["shares"],
+        })
+    return out
+
+
+def video_titles(platform=None):
+    """当前已知视频标题（按受欢迎程度排序：出现最多/最新）"""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT title, COUNT(*) c, MAX(fetch_at) m FROM works "
+            + (f"WHERE platform=? " if platform else "")
+            + "GROUP BY title ORDER BY m DESC LIMIT 200").fetchall()
+    return [{"title": r["title"], "seen": r["c"], "last": r["m"]} for r in rows]

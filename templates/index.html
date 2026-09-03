@@ -35,6 +35,11 @@
   .logs { background: #0f172a; color: #cbd5e1; border-radius: 12px; padding: 12px; font-size: 12px; font-family: Consolas, monospace; height: 260px; overflow-y: auto; line-height: 1.8; }
   .badge { display:inline-block; padding: 1px 8px; border-radius: 20px; font-size: 11px; background: #eef2ff; color: #4338ca; }
   .muted { color: #9ca3af; }
+  .trend-box { background: #fff; border-radius: 12px; padding: 14px; box-shadow: 0 1px 4px rgba(0,0,0,.06); }
+  .trend-box canvas { width: 100%; height: 280px; display: block; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; color: #475569; }
+  .legend i { display: inline-block; width: 18px; height: 4px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+  select { padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px; background: #fff; max-width: 420px; }
 </style>
 </head>
 <body>
@@ -58,6 +63,21 @@
 
   <div class="sec-title">作品明细（各平台最新一次快照）</div>
   <div id="tables"></div>
+
+  <div class="sec-title">📈 单条视频趋势（多平台对比）</div>
+  <div class="toolbar">
+    <select id="trend-video"><option value="">— 选择视频 —</option></select>
+    <select id="trend-metric">
+      <option value="views">播放</option>
+      <option value="likes">点赞</option>
+      <option value="comments">评论</option>
+      <option value="collects">收藏</option>
+      <option value="shares">分享</option>
+    </select>
+    <span class="muted">选择任意一条视频，看它在各平台每次采集的走势（平台同时长自动对比）</span>
+  </div>
+  <div class="trend-box"><canvas id="trend-canvas"></canvas><div class="legend" id="trend-legend"></div></div>
+  <div class="muted" id="trend-empty" style="margin-top:8px">尚未选择视频</div>
 
   <div class="sec-title">采集日志</div>
   <div class="logs" id="logs"></div>
@@ -157,6 +177,96 @@ load();
 setInterval(() => load(), 60000);
 pollLogs(false);
 setInterval(() => pollLogs(false), 4000);
+
+// ===== 单条视频趋势 =====
+const PLAT_COLORS = { douyin:"#FE2C55", kuaishou:"#FF6A00", tencent:"#07C160", xiaohongshu:"#FF2442", bilibili:"#00A1D6" };
+let trendData = null;
+
+async function loadVideoList() {
+  try {
+    const r = await fetch("/api/videos");
+    const d = await r.json();
+    const sel = document.getElementById("trend-video");
+    sel.innerHTML = '<option value="">— 选择视频 —</option>' +
+      (d.titles || []).map(t => `<option value="${(t.title||"").replace(/"/g,"&quot;")}">${t.title}</option>`).join("");
+  } catch (e) {}
+}
+
+async function loadTrend() {
+  const q = document.getElementById("trend-video").value;
+  if (!q) { trendData = null; drawTrend(); document.getElementById("trend-empty").textContent = "尚未选择视频"; return; }
+  const r = await fetch("/api/trend?video=" + encodeURIComponent(q));
+  const d = await r.json();
+  trendData = d.history || {};
+  drawTrend();
+  document.getElementById("trend-empty").textContent = "";
+}
+
+function drawTrend() {
+  const metric = document.getElementById("trend-metric").value;
+  const cv = document.getElementById("trend-canvas");
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.parentElement.clientWidth - 28, h = 280;
+  cv.width = w * dpr; cv.height = h * dpr;
+  cv.style.height = h + "px";
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const legend = document.getElementById("trend-legend");
+  legend.innerHTML = "";
+  if (!trendData) return;
+  const tset = new Set();
+  for (const pf in trendData) for (const row of trendData[pf]) tset.add(row.fetch_at);
+  const times = [...tset].sort();
+  if (!times.length) { legend.innerHTML = '<span class="muted">该视频暂无历史数据</span>'; return; }
+  const padL = 46, padR = 16, padT = 14, padB = 34;
+  const plotW = w - padL - padR, plotH = h - padT - padB;
+  let maxV = 1;
+  for (const pf in trendData) for (const row of trendData[pf]) { const v = row[metric]; if (v && v > maxV) maxV = v; }
+  maxV = Math.ceil(maxV * 1.08);
+  const x = i => padL + (times.length === 1 ? plotW / 2 : plotW * i / (times.length - 1));
+  const y = v => padT + plotH - (v / maxV) * plotH;
+  // 网格 + y 标签
+  ctx.font = "11px sans-serif"; ctx.fillStyle = "#9ca3af"; ctx.strokeStyle = "#eef1f5"; ctx.lineWidth = 1;
+  for (let g = 0; g <= 4; g++) {
+    const gv = Math.round(maxV * g / 4), gy = y(gv);
+    ctx.beginPath(); ctx.moveTo(padL, gy); ctx.lineTo(w - padR, gy); ctx.stroke();
+    ctx.fillText(gv >= 1000 ? (gv / 1000).toFixed(1) + "k" : String(gv), 6, gy + 4);
+  }
+  // x 标签（最多 6 个）
+  ctx.fillStyle = "#9ca3af";
+  const step = Math.max(1, Math.ceil(times.length / 6));
+  for (let i = 0; i < times.length; i += step) {
+    ctx.fillText(times[i].slice(5, 16), Math.max(padL, x(i) - 26), h - 12);
+  }
+  // 各平台折线
+  let drew = false;
+  for (const pf in trendData) {
+    const color = PLAT_COLORS[pf] || "#6b7280";
+    const pts = trendData[pf].map(row => {
+      const v = row[metric];
+      return [x(times.indexOf(row.fetch_at)), v ? y(v) : null];
+    });
+    if (!pts.some(p => p[1] !== null)) continue;
+    drew = true;
+    ctx.strokeStyle = color; ctx.lineWidth = 2;
+    ctx.beginPath();
+    let started = false;
+    for (const [px, py] of pts) {
+      if (py === null) { started = false; continue; }
+      if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    ctx.fillStyle = color;
+    for (const [px, py] of pts) if (py !== null) { ctx.beginPath(); ctx.arc(px, py, 3, 0, Math.PI * 2); ctx.fill(); }
+    legend.innerHTML += `<span><i style="background:${color}"></i>${PLAT_NAMES[pf] || pf}</span>`;
+  }
+  if (!drew) legend.innerHTML = '<span class="muted">该视频暂无数据</span>';
+}
+
+document.getElementById("trend-video").addEventListener("change", loadTrend);
+document.getElementById("trend-metric").addEventListener("change", drawTrend);
+loadVideoList();
 </script>
 </body>
 </html>
