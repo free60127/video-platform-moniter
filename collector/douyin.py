@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """抖音采集：创作者中心作品管理（播放/点赞/评论/分享/收藏/完播率）—— Playwright"""
+import asyncio
 import re
 
 from playwright.async_api import async_playwright
@@ -45,7 +46,7 @@ async def collect(cookies_dir) -> dict:
                 stable = 0
                 for i in range(25):
                     await page.wait_for_timeout(2000)
-                    body = await page.evaluate("() => document.body.innerText")
+                    body = await asyncio.wait_for(page.evaluate("() => document.body.innerText"), 8)
                     if not body.strip():
                         # 页面还在加载：空 body 不视为稳定，防止提前退出
                         stable = 0
@@ -58,9 +59,9 @@ async def collect(cookies_dir) -> dict:
                         stable = 0
                     prev = body
             else:
-                # goto 全部超时：页面可能仍在加载，尝试直接读取
+                # goto 全部超时：页面可能仍在加载，尝试直接读取（8s 超时保护，防 driver 悬挂）
                 try:
-                    body = await page.evaluate("() => document.body.innerText")
+                    body = await asyncio.wait_for(page.evaluate("() => document.body.innerText"), 8)
                 except Exception:
                     body = ""
                 if len(body) < 200:
@@ -79,7 +80,7 @@ async def collect(cookies_dir) -> dict:
                         log(f"[douyin] 打开数据中心超时({str(e)[:60]}), 重试…")
                 for i in range(12):
                     await page.wait_for_timeout(2000)
-                    dbody = await page.evaluate("() => document.body.innerText")
+                    dbody = await asyncio.wait_for(page.evaluate("() => document.body.innerText"), 8)
                     if "总粉丝量" in dbody:
                         break
                 out["fans"], out["extra"] = _parse_data_center(dbody)
