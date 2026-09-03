@@ -9,3 +9,6 @@ __pycache__/
 venv/
 .vscode/
 .idea/
+profile_tencent/
+server_out.txt
+tmp_*

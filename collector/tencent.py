@@ -1,28 +1,43 @@
 # -*- coding: utf-8 -*-
-"""腾讯视频号采集：首页概览（关注者/视频数/昨日数据）+ 尝试内容管理视频列表 —— Playwright"""
+"""腾讯视频号采集：首页概览（关注者/视频数/昨日数据）+ 内容管理视频列表 —— Playwright
+登录态：持久 profile（profile_tencent，需先跑 启动视频号统计登录.bat 扫码一次）
+"""
+import asyncio
 import re
+from pathlib import Path
 
 from playwright.async_api import async_playwright
 
 from .base import load_cookie, clean_ctx, log, to_int
 
 HOME = "https://channels.weixin.qq.com/platform"
+PROFILE = Path(__file__).resolve().parent.parent / "profile_tencent"
+CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe"
+
+
+async def _evaluate(page, expr):
+    """evaluate 带硬超时（本版 Playwright evaluate 不支持 timeout 参数）"""
+    return await asyncio.wait_for(page.evaluate(expr), 8)
 
 
 async def collect(cookies_dir) -> dict:
     out = {"platform": "tencent", "works": [], "fans": None, "extra": {}, "ok": False, "error": None}
-    try:
-        load_cookie(cookies_dir / "account.json")
-    except Exception as e:
-        out["error"] = str(e)
-        log(f"[tencent] ✗ {e}")
+    if not PROFILE.exists():
+        out["error"] = "profile_tencent 不存在，请先双击 启动视频号统计登录.bat 扫码登录一次"
+        log(f"[tencent] ✗ {out['error']}")
         return out
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            ctx = await browser.new_context(storage_state=str(cookies_dir / "account.json"))
+            # headed + 窗口移出屏幕：微信对 headless/自动化识别严格，
+            # 持久 profile（用户扫码一次）+ 真 headed 指纹最稳；offscreen 不打扰
+            browser = await p.chromium.launch_persistent_context(
+                user_data_dir=str(PROFILE), headless=False,
+                executable_path=CHROME,
+                viewport={"width": 1440, "height": 900}, locale="zh-CN",
+                args=["--window-position=-32000,-32000", "--start-minimized"])
+            ctx = browser
             await clean_ctx(ctx)
-            page = await ctx.new_page()
+            page = ctx.pages[0] if ctx.pages else await ctx.new_page()
             # 捕获 XHR：内容管理视频列表接口
             xhr_urls = []
 
@@ -36,11 +51,18 @@ async def collect(cookies_dir) -> dict:
                     pass
 
             page.on("response", on_response)
-            await page.goto(HOME, wait_until="domcontentloaded", timeout=30000)
+            try:
+                await asyncio.wait_for(
+                    page.goto(HOME, wait_until="domcontentloaded"), 60)
+            except Exception as e:
+                log(f"[tencent] goto 超时/异常: {str(e)[:60]}")
             body = ""
             for i in range(10):
                 await page.wait_for_timeout(2000)
-                body = await page.evaluate("() => document.body.innerText")
+                try:
+                    body = await _evaluate(page, "() => document.body.innerText")
+                except Exception:
+                    continue
                 if "关注者" in body and len(body) > 600:
                     break
             found_xhr = None
@@ -66,7 +88,7 @@ async def collect(cookies_dir) -> dict:
                 if hit is None:
                     continue
                 try:
-                    fbody = await hit.evaluate("() => document.body ? document.body.innerText : ''")
+                    fbody = await _evaluate(hit, "() => document.body ? document.body.innerText : ''")
                 except Exception:
                     continue
                 if fbody and len(fbody) > 300:
@@ -77,7 +99,7 @@ async def collect(cookies_dir) -> dict:
             out["extra"]["xhr_candidates"] = xhr_urls
             out["ok"] = True
             log(f"[tencent] ✓ 作品 {len(out['works'])} 条, 粉丝 {out['fans']}")
-            await browser.close()
+            await ctx.close()
     except Exception as e:
         out["error"] = f"{type(e).__name__}: {e}"
         log(f"[tencent] ✗ {out['error']}")

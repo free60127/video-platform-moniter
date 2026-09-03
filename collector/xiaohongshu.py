@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """小红书采集：新版笔记管理 /new/note-manager（观看/评论/点赞/收藏/分享）+ 首页粉丝概览 —— Playwright"""
+import asyncio
 import re
 import json
 
@@ -11,6 +12,10 @@ HOME = "https://creator.xiaohongshu.com/"
 MANAGE = "https://creator.xiaohongshu.com/new/note-manager"
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$")
 DUR_RE = re.compile(r"^\d{1,2}:\d{2}$")
+
+
+async def _evaluate(page, expr):
+    return await asyncio.wait_for(page.evaluate(expr), 8)
 
 
 async def collect(cookies_dir) -> dict:
@@ -39,7 +44,10 @@ async def collect(cookies_dir) -> dict:
             body = ""
             for i in range(15):
                 await page.wait_for_timeout(2000)
-                body = await page.evaluate("() => document.body.innerText")
+                try:
+                    body = await _evaluate(page, "() => document.body.innerText")
+                except Exception:
+                    continue
                 if "已发布" in body and len(body) > 300:
                     break
             lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
@@ -53,8 +61,15 @@ async def collect(cookies_dir) -> dict:
                     if attempt == 2:
                         raise e
                     log(f"[xiaohongshu] 打开首页超时，重试…")
-            await page.wait_for_timeout(6000)
-            hbody = await page.evaluate("() => document.body.innerText")
+            hbody = ""
+            for i in range(10):
+                await page.wait_for_timeout(2000)
+                try:
+                    hbody = await _evaluate(page, "() => document.body.innerText")
+                except Exception:
+                    continue
+                if "粉丝" in hbody or "粉丝数" in hbody:
+                    break
             out["fans"], out["extra"] = _parse_home(hbody)
             out["ok"] = True
             log(f"[xiaohongshu] ✓ 笔记 {len(out['works'])} 条, 粉丝 {out['fans']}")
@@ -117,15 +132,17 @@ def _parse_home(body):
     """首页：关注数 12 / 粉丝数 19 / 获赞与收藏 21（值在标签前一行）+ 近7日数据（值在标签后一行）"""
     fans = None
     extra = {}
+    if not body:
+        return fans, extra
     lines = [ln.strip() for ln in body.split("\n") if ln.strip()]
     for i, ln in enumerate(lines):
-        if ln in ("关注数", "粉丝数", "获赞与收藏"):
+        if ln in ("关注数", "粉丝数", "粉丝", "获赞与收藏"):
             # 值在标签前一行：... 12 关注数
             v = to_int(lines[i - 1]) if i > 0 else None
             if v is not None:
                 if ln == "关注数":
                     extra["follows"] = v
-                elif ln == "粉丝数":
+                elif ln in ("粉丝数", "粉丝"):
                     fans = v
                 else:
                     extra["total_likes_collects"] = v
@@ -140,6 +157,11 @@ def _parse_home(body):
                     num = to_int(v)
                     if num is not None:
                         extra.setdefault("last7", {})[key] = num
+    if fans is None:
+        # 兜底：粘连形式（如『粉丝 20』）
+        m = re.search(r"(?:粉丝数|粉丝)\s*：?\s*(\d[\d,]*)", body)
+        if m:
+            fans = to_int(m.group(1))
     return fans, extra
 
 

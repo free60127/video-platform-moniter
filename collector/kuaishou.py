@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """快手采集：作品管理列表（标题/播放/点赞/评论）—— Playwright"""
+import asyncio
 import re
+from pathlib import Path
 
 from playwright.async_api import async_playwright
 
@@ -63,35 +65,56 @@ async def collect(cookies_dir) -> dict:
             except Exception as e:
                 log(f"[kuaishou] 数据概览抓取失败: {e}")
             # 总粉丝数：www.kuaishou.com 登录态主页（需 ks_web 登录态）
-            web_state = cookies_dir.parent / "ks_web" / "account.json"
-            if web_state.exists():
+            # 登录态可能存放在两个位置（stats-platform 自有目录 或 与上传器 cookies 同级）
+            web_state = None
+            ks_candidates = [
+                Path(__file__).resolve().parent.parent / "cookies" / "ks_web" / "account.json",
+                cookies_dir.parent / "ks_web" / "account.json",
+            ]
+            for cand in ks_candidates:
+                if cand.exists():
+                    web_state = cand
+                    break
+            if web_state:
                 try:
                     await page.context.close()
                 except Exception:
                     pass
                 ctx2 = await browser.new_context(storage_state=str(web_state),
-                                                 viewport={"width": 1280, "height": 900}, locale="zh-CN")
+                                                 viewport={"width": 1280, "height": 900}, locale="zh-CN",
+                                                 user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                                             "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                                             "Chrome/136.0.0.0 Safari/537.36"))
                 await clean_ctx(ctx2)
                 page2 = await ctx2.new_page()
-                await page2.goto(WEB_PROFILE, wait_until="domcontentloaded", timeout=45000)
+                try:
+                    await asyncio.wait_for(page2.goto(WEB_PROFILE, wait_until="domcontentloaded"), 45)
+                except Exception as e:
+                    log(f"[kuaishou] 主页 goto 异常: {str(e)[:60]}")
                 for i in range(8):
                     await page2.wait_for_timeout(2000)
-                    wb = await page2.evaluate("() => document.body ? document.body.innerText : ''")
+                    try:
+                        wb = await asyncio.wait_for(
+                            page2.evaluate("() => document.body ? document.body.innerText : ''"), 8)
+                    except Exception:
+                        continue
                     if "粉丝" in wb:
                         break
                 out["fans"] = _parse_web_profile(wb)
                 await ctx2.close()
             if out["fans"] is None:
                 # 兜底：手动口径（来自快手 App「我」页，用户可改 fans_manual.txt）
-                manual = cookies_dir.parent / "ks_web" / "fans_manual.txt"
-                if manual.exists():
-                    try:
-                        v = to_int(manual.read_text(encoding="utf-8").strip())
-                        if v is not None:
-                            out["fans"] = v
-                            log("[kuaishou] 使用手动粉丝数(快手App口径)")
-                    except Exception:
-                        pass
+                for manual_p in [Path(__file__).resolve().parent.parent / "cookies" / "ks_web" / "fans_manual.txt",
+                                 cookies_dir.parent / "ks_web" / "fans_manual.txt"]:
+                    if manual_p.exists():
+                        try:
+                            v = to_int(manual_p.read_text(encoding="utf-8").strip())
+                            if v is not None:
+                                out["fans"] = v
+                                log("[kuaishou] 使用手动粉丝数(快手App口径)")
+                                break
+                        except Exception:
+                            pass
             out["ok"] = True
             log(f"[kuaishou] ✓ 作品 {len(out['works'])} 条, 粉丝 {out['fans']}")
             await browser.close()
